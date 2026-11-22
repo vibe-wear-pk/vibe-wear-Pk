@@ -1,5 +1,6 @@
 "use client";
 
+import { upload } from "@vercel/blob/client";
 import { AnimatePresence, motion } from "framer-motion";
 import { Check, Info, LoaderCircle, MessageCircle } from "lucide-react";
 import { useId, useState, type FormEvent, type ReactNode } from "react";
@@ -89,7 +90,8 @@ export function CustomInquiryForm() {
   const [errors, setErrors] = useState<Errors>({});
   const [status, setStatus] = useState<Status>("idle");
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    if (status === "uploading") return;
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
@@ -124,12 +126,45 @@ export function CustomInquiryForm() {
         `*Reference Image:* ${imageLine}`,
       ].join("\n");
 
-    const url = whatsappLink(buildMessage(file ? `Will attach "${file.name}" in this chat` : "Not provided"));
-    setStatus(file ? "attach-manually" : "done");
-    openWhatsApp(url);
+    if (!file) {
+      setStatus("done");
+      openWhatsApp(whatsappLink(buildMessage("Not provided")));
+      return;
+    }
+
+    // Browsers block popups opened after an await, so reserve the tab now when embedded.
+    const pendingTab = window.self !== window.top ? window.open("about:blank", "_blank") : null;
+
+    setStatus("uploading");
+    try {
+      const safeName = file.name.replace(/[^\w.-]+/g, "-").slice(-80) || "design.jpg";
+      const blob = await upload(`custom-designs/${safeName}`, file, {
+        access: "public",
+        handleUploadUrl: "/api/upload",
+        contentType: file.type || undefined,
+      });
+      const url = whatsappLink(buildMessage(blob.url));
+      setStatus("done");
+      if (pendingTab) {
+        pendingTab.opener = null;
+        pendingTab.location.href = url;
+      } else {
+        openWhatsApp(url);
+      }
+    } catch (error) {
+      console.error("Image upload failed:", error);
+      const url = whatsappLink(buildMessage(`Will attach "${file.name}" in this chat`));
+      setStatus("attach-manually");
+      if (pendingTab) {
+        pendingTab.opener = null;
+        pendingTab.location.href = url;
+      } else {
+        openWhatsApp(url);
+      }
+    }
   }
 
-  const busy = false;
+  const busy = status === "uploading";
 
   return (
     <form
@@ -194,8 +229,8 @@ export function CustomInquiryForm() {
             <div className="flex gap-3 rounded-2xl border border-cream/40 bg-cream/10 p-4 text-sm leading-relaxed text-ivory">
               <Info className="mt-0.5 size-4 shrink-0 text-cream" aria-hidden="true" />
               <p>
-                <span className="font-semibold">Your order details are ready.</span> Please attach your reference image
-                directly inside the WhatsApp chat that just opened.
+                <span className="font-semibold">We couldn&apos;t upload your image.</span> Your order details were sent —
+                please attach your reference image directly inside the WhatsApp chat that just opened.
               </p>
             </div>
           </motion.div>
@@ -244,7 +279,7 @@ export function CustomInquiryForm() {
         </AnimatePresence>
       </motion.button>
       <p className="text-center text-xs text-taupe">
-        Opens WhatsApp with your details pre-filled. No account needed.
+        Opens WhatsApp with your details and a link to your reference image pre-filled. No account needed.
       </p>
     </form>
   );
