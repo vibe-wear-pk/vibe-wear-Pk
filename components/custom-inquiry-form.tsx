@@ -14,8 +14,6 @@ const PLACEMENTS = ["Back Print", "Front Print", "Front & Back", "Chest Logo + B
 type Status = "idle" | "uploading" | "sharing" | "done" | "attach-manually";
 type Errors = Partial<Record<"name" | "phone", string>>;
 
-const PHONE_PATTERN = /^(\+?92|0)3\d{9}$/;
-
 const fieldClass =
   "w-full rounded-xl border border-line bg-espresso px-4 py-3 text-sm text-ivory placeholder:text-taupe/60 transition-colors focus:border-cream focus:outline-none focus:ring-2 focus:ring-cream/30";
 
@@ -59,31 +57,21 @@ function SelectField({ id, label, name, options }: { id: string; label: string; 
   );
 }
 
-async function uploadToImgBB(file: File, key: string) {
-  const body = new FormData();
-  body.append("image", file);
-  const response = await fetch(`https://api.imgbb.com/1/upload?key=${encodeURIComponent(key)}`, {
-    method: "POST",
-    body,
-  });
-  if (!response.ok) throw new Error(`ImgBB upload failed with ${response.status}`);
-  const json = (await response.json()) as { data?: { url?: string; display_url?: string } };
-  const url = json.data?.url ?? json.data?.display_url;
-  if (!url) throw new Error("ImgBB response missing URL");
-  return url;
-}
-
-function canShareFile(file: File) {
-  if (typeof navigator === "undefined" || !navigator.canShare || !navigator.share) return false;
-  const isTouch = navigator.maxTouchPoints > 0 || /Android|iPhone|iPad/i.test(navigator.userAgent);
-  return isTouch && navigator.canShare({ files: [file] });
-}
-
-function openWhatsApp(url: string, pending: Window | null) {
-  if (pending && !pending.closed) {
-    pending.location.href = url;
-  } else {
-    window.open(url, "_blank", "noopener,noreferrer") ?? window.location.assign(url);
+function openWhatsApp(url: string) {
+  const inIframe = window.self !== window.top;
+  if (!inIframe) {
+    window.location.href = url;
+    return;
+  }
+  const opened = window.open(url, "_blank");
+  if (opened) {
+    opened.opener = null;
+    return;
+  }
+  try {
+    window.top!.location.href = url;
+  } catch {
+    window.location.href = url;
   }
 }
 
@@ -101,18 +89,24 @@ export function CustomInquiryForm() {
   const [errors, setErrors] = useState<Errors>({});
   const [status, setStatus] = useState<Status>("idle");
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const data = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const data = new FormData(form);
     const name = String(data.get("name") ?? "").trim();
     const phone = String(data.get("phone") ?? "").trim();
-    const normalizedPhone = phone.replace(/[\s-]/g, "");
+    const phoneDigits = phone.replace(/[^\d]/g, "");
 
     const nextErrors: Errors = {};
     if (name.length < 2) nextErrors.name = "Please enter your full name.";
-    if (!PHONE_PATTERN.test(normalizedPhone)) nextErrors.phone = "Enter a valid Pakistani mobile number, e.g. 0324 4578990.";
+    if (phoneDigits.length < 10 || phoneDigits.length > 15)
+      nextErrors.phone = "Enter a valid WhatsApp number, e.g. 0324 4578990.";
     setErrors(nextErrors);
-    if (Object.keys(nextErrors).length > 0) return;
+    if (Object.keys(nextErrors).length > 0) {
+      const firstInvalid = nextErrors.name ? ids.name : ids.phone;
+      document.getElementById(firstInvalid)?.focus();
+      return;
+    }
 
     const notes = String(data.get("notes") ?? "").trim();
     const buildMessage = (imageLine: string) =>
@@ -130,51 +124,12 @@ export function CustomInquiryForm() {
         `*Reference Image:* ${imageLine}`,
       ].join("\n");
 
-    if (!file) {
-      openWhatsApp(whatsappLink(buildMessage("Not provided")), null);
-      setStatus("done");
-      return;
-    }
-
-    const imgbbKey = process.env.NEXT_PUBLIC_IMGBB_API_KEY;
-
-    if (imgbbKey) {
-      const pending = window.open("", "_blank");
-      setStatus("uploading");
-      try {
-        const url = await uploadToImgBB(file, imgbbKey);
-        openWhatsApp(whatsappLink(buildMessage(url)), pending);
-        setStatus("done");
-        return;
-      } catch (error) {
-        console.error("[v0] ImgBB upload failed, falling back:", error);
-        pending?.close();
-      }
-    }
-
-    if (canShareFile(file)) {
-      setStatus("sharing");
-      try {
-        await navigator.share({
-          files: [file],
-          title: "Vibe Wear PK custom design",
-          text: buildMessage("Attached to this message"),
-        });
-        setStatus("done");
-        return;
-      } catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError") {
-          setStatus("idle");
-          return;
-        }
-      }
-    }
-
-    setStatus("attach-manually");
-    openWhatsApp(whatsappLink(buildMessage("Will attach in this chat")), null);
+    const url = whatsappLink(buildMessage(file ? `Will attach "${file.name}" in this chat` : "Not provided"));
+    setStatus(file ? "attach-manually" : "done");
+    openWhatsApp(url);
   }
 
-  const busy = status === "uploading" || status === "sharing";
+  const busy = false;
 
   return (
     <form
